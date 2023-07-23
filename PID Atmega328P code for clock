@@ -1,0 +1,206 @@
+#include<Wire.h>
+#include <PID_v2.h>
+#define PWMpin 9
+
+// uncomment your desired RPM and don't forget to change headers on PCB//
+//////FAN SPEED-SIGNAL//////
+//double Target = 90;  // 1800 RPM (90*(60/3 sec update)=1800)
+double Target = 105;   // 2100 RPM (105*(60/3 sec update)=2100)
+//double Target = 120; // 2400 RPM (120*(60/3 sec update)=2400)
+int Update_interval = 3;
+double Setpoint = Target * (60 / Update_interval);
+double SetpointOld = 0;
+double Input;
+double Output;
+double oldInput;
+
+int Seconds, RR = 0;
+int MAXSPD = 5000;
+int MINSPD =  250;
+int SetMin = 6;
+int SetPlus = 7;
+int SampleDuration = 30; // in Milliseconds
+volatile unsigned long timeX = 1;
+int PulsesPerRevolution = 2;
+volatile int Counts = 1;//2
+double PulsesPerMinute;
+volatile unsigned long LastTime;
+volatile int PulseCtrX;
+int PulseCtr;
+unsigned long Counter;
+unsigned long Time;
+float totRPM = 0;     // changed to float so we dont have to make extra calculation to add exra RPM needed because we update Setpoint every 3 seconds.
+float previousRPMcount = 0;  // changed to float so we dont have to make extra calculation to add exra RPM needed because we update Setpoint every 3 seconds.
+
+
+PID myPID(&Input, &Output, &Setpoint, 0.04, 0.1, 0.00, DIRECT);
+//PID myPID(&Input, &Output, &Setpoint, 0.4, 0.33, 0.00, DIRECT);
+//PID myPID(&Input, &Output, &Setpoint, 0.33, 0.15, 0.00, DIRECT);
+
+void setup() {
+  //////////////////////////SET_DS3231 TO pulse 1HZ at SQW output(tempereture compensated).
+  Wire.begin();
+  Wire.beginTransmission(0b1101000); //address DS3231 start com
+  Wire.write(0x0E); //Control Register Address is queued
+  Wire.write(0x00); //Set 1Hz @ SQW
+  Wire.endTransmission(); //Done deal!
+
+
+  ////////////////Set 25Khz on pin 9(the fan likes this acording the datasheet :-P)
+  TCCR1A = (1 << COM1A1) | (1 << COM1B1) | (1 << WGM11);
+  TCCR1B = (1 << CS10) | (1 << WGM13);
+  ICR1 = 320;
+  OCR1A = 0;
+  OCR1B = 0;
+
+
+  // note that 1666666.67 = (60 seonds * 1000000 microseconds)microseconds in a minute / (36 / 9) pulses in 1 revolution
+  PulsesPerMinute = (60 * 1000000) / (PulsesPerRevolution / Counts);
+  SetpointOld = 0;
+  pinMode(PWMpin, OUTPUT);
+  analogWrite(PWMpin, 0);
+  pinMode(2, INPUT_PULLUP);
+  pinMode(3, INPUT_PULLUP);
+  pinMode(4, OUTPUT);
+  pinMode(SetMin, OUTPUT);
+  pinMode(SetPlus, OUTPUT);
+  digitalWrite(SetMin, LOW);
+  digitalWrite(SetPlus, LOW);
+  Serial.begin(115200);
+  analogWrite(PWMpin, 230);
+  attachInterrupt(0, sensorInterrupt, RISING);
+  attachInterrupt(1, Clock, RISING);
+
+  myPID.SetSampleTime(1);
+  myPID.SetOutputLimits(15, 255);
+  PulseCtr = 0;
+  myPID.SetMode(AUTOMATIC);
+  myPID.PrimeIntegral(100);
+  myPID.Compute();
+  delay(1500);
+}
+
+void loop() {
+  RR++;
+  if (Seconds >= Update_interval ) {
+    Seconds = 0;
+   previousRPMcount = totRPM;
+    totRPM = 0.0;
+    Setpoint += (((Target * 2) - previousRPMcount));
+    if (Setpoint > MAXSPD) {
+      Setpoint = MAXSPD;
+    }
+    if (Setpoint < MINSPD) {
+      Setpoint = MINSPD;
+    }
+  }
+
+  if (Setpoint > SetpointOld) {
+    digitalWrite(SetPlus, HIGH);
+    delay(1);
+    digitalWrite(SetPlus, LOW);
+    SetpointOld++;
+  }
+  if (Setpoint < SetpointOld) {
+    digitalWrite(SetMin, HIGH);
+    delay(1);
+    digitalWrite(SetMin, LOW);
+    SetpointOld--;
+  }
+
+
+  readRpm();
+  static unsigned long SpamTimer;
+  if ((unsigned long)(millis() - SpamTimer) >= 15000) {
+    SpamTimer = millis();
+  }
+  //{
+  if (RR >= 100 ) {////////////////////////////////////////////not to high or low hah
+    Serial.println(Input,0);
+    //Serial.print(",");
+    //Serial.println(Setpoint,0);
+    //Serial.print("");
+    //Serial.print(",");
+    //Serial.println(Output);
+    RR = 0;
+  }
+}
+void sensorInterrupt() {
+  static int Ctr;
+  unsigned long Time;
+  Ctr++;
+  totRPM++;
+  if (Ctr >= Counts) { // so we are taking an average of "Counts" readings to use in our calculations
+    Time = micros();
+    timeX += (Time - LastTime); // this time is accumulative over those "Counts" readings
+    LastTime = Time;
+    PulseCtrX ++; // will usually be 1 unless something else delays the sample
+    Ctr = 0;
+  }
+}
+
+void sensorInterruptX() {
+  static int Ctr;
+  unsigned long Time;
+  Ctr++;
+  totRPM++;
+  if (Ctr >= Counts) { // so we are taking an average of "Counts" readings to use in our calculations
+    Time = micros();
+    timeX += (Time - LastTime); // this time is accumulative over those "Counts" readings
+    LastTime = Time;
+    PulseCtrX ++; // will usually be 1 unless something else delays the sample
+    Ctr = 0;
+  }
+}
+
+void readRpm() {
+  if (!PulseCtrX) return; // << Added lets not stop interrupts unless we know we are ready (keep other code happy).
+  cli ();         // clear interrupts flag
+  Time = timeX;   // Make a copy so if an interrupt occurs timeX can be altered and not affect the results.
+  timeX = 0;
+  PulseCtr = PulseCtrX;
+  PulseCtrX = 0;
+  sei ();         // set interrupts flag
+  if (PulseCtr > 0) {
+    Input =  (double) (PulsesPerMinute /  (double)(( (unsigned long)Time ) *  (unsigned long)PulseCtr)); // double has more percision
+    //   PulseCtr = 0; // set pulse Ctr to zero
+    AverageCapture(Input);
+    //debug();
+    myPID.Compute();
+    analogWrite(PWMpin, Output);
+    //
+    if (Time > ((SampleDuration + 1) * 1000))Counts--;
+    if (Time < ((SampleDuration - 1) * 1000))Counts++;
+    //Counts = constrain(Counts, PulsesPerRevolution * .1, PulsesPerRevolution * 400);
+    Counts = constrain(Counts, 1, 100);
+    Time = 0; // set time to zero to wait for the next rpm trigger.
+    Counter += PulseCtr;
+    PulseCtr = 0; // set pulse Ctr to zero
+    PulsesPerMinute = (60.0 * 1000000.0) / (double)((double)PulsesPerRevolution / (double)Counts);
+    // totRPM = totRPM + Counts / PulsesPerRevolution;
+  }
+}
+float AvgArray[100];//100
+int Readings = 0;
+void AverageCapture(float in) {
+  static int Position = 0;
+  AvgArray[Position] = in;
+  Position++;
+  Readings++;
+  Readings = min (100, Readings); // 100 readings 0-99;
+  if (Position >= 100)Position = 0;//99 spots
+}
+float AverageValue() {
+  float Total = 0;
+  float Average;
+  if (!Readings)return (0.0);
+  for (int Position = 0; Position < Readings; Position++) {
+    Total += AvgArray[Position];
+  }
+  Average = Total / Readings;
+  return (Average);
+}
+
+void Clock() {
+  Seconds++;
+}
