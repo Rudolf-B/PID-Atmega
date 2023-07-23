@@ -1,0 +1,195 @@
+#include "LedControl.h"
+#define INTERRUPT_PIN 2 // INT0 -> PB2
+//#include<avr/io.h>
+const int Set_Button = 4;
+int Min_Sec = 0;
+int Swich_Min_Sec = 0;
+bool free_the_DOT = 0;
+char *dot[] = {"Hr", "hr", "Mi", "mi", "Se", "se"};
+int i = 0;
+int toggle = 1;
+int Counter = 0;
+long previousMillis = 0;
+long interval = 100;
+LedControl Time = LedControl(3, 1, 0, 1);
+//                       DIN,CLK,LOAD
+
+//1 PB5XX           8 VCC
+//2 PB3 (6MAX)      7 PB2
+//3 PB4 (12MAX)     6 PB1 (MAX13)
+//4 GRND            5 PBO
+
+
+//pin3 connected to CS12
+//pin2 connected to DIN1
+//pin6 connected to CLK13
+
+bool GO = 0;
+byte second ;
+byte minute ;
+byte hour ;
+int MinFast = 110;
+int ilast = 0;
+
+void setup() {
+
+  GIMSK |= (1 << INT0); // enable external interrupt
+  MCUCR |= (1 << ISC00); // CHANGE mode
+
+
+  pinMode(INTERRUPT_PIN, INPUT_PULLUP);
+  pinMode(Set_Button, INPUT_PULLUP);
+
+  Time.shutdown(0, false);
+  Time.setIntensity(0, 1);
+  Time.clearDisplay(0);
+}
+
+void loop() {
+
+  SET();
+
+  if (second > 59)
+  {
+    minute++;
+    second = 00;
+  }
+  if (minute > 59)
+  {
+    hour++;
+    hour = hour % 24;
+    minute = 00;
+  }
+
+  //  if (hour > 23) {
+  //    hour = 00;
+  //    //minute = 00;
+  //  }
+
+  Time.setDigit(0, 0, second % 10, dot[6]);
+  Time.setDigit(0, 1, (second - second % 10) / 10, dot[5]);
+  Time.setDigit(0, 2, minute % 10, dot[4]);
+  Time.setDigit(0, 3, (minute - minute % 10) / 10, dot[3]);
+  Time.setDigit(0, 4, hour % 10, dot[2]);
+  Time.setDigit(0, 5, (hour - hour % 10) / 10, dot[1]);
+
+  unsigned long currentMillis = millis();
+
+  dot[i] = 1;
+
+
+  if (free_the_DOT) {
+    if (currentMillis - previousMillis > interval) {
+      previousMillis = currentMillis;
+
+      dot[ilast] = 0;
+      ilast = i;
+      i += toggle;
+      if (i > 6 || i < 1) {
+        toggle = -toggle;
+      }
+    }
+  }
+}
+
+ISR(INT0_vect) {
+  Counter++;
+  if (Counter >= 140) {
+    second++;
+    Counter=0;
+  }
+  Swich_Min_Sec++;
+  if (Swich_Min_Sec >= 2500) {
+    Min_Sec++;
+    if (Min_Sec >= 32767) {
+      Min_Sec = 3;
+    }
+    Swich_Min_Sec = 0;
+  }
+}
+
+void SET() {
+  if (!Min_Sec) {
+    dot[6] = 0;
+    dot[5] = 0;
+    dot[4] = 0;
+    dot[3] = 0;
+    dot[2] = 1;
+    dot[1] = 1;
+
+    if (!digitalRead(Set_Button)) {////////////////////////////////////////////
+      hour += 1;
+
+      if (hour >= 24) {
+        hour = 0;
+      }
+      delay(MinFast);
+      MinFast--;
+      if (MinFast <= 5) {
+        MinFast = 5;
+      }
+    } else {
+      MinFast = 150;
+    }
+  }
+
+  if (Min_Sec == 1) {
+    dot[6] = 0;
+    dot[5] = 0;
+    dot[4] = 1;
+    dot[3] = 1;
+    dot[2] = 0;
+    dot[1] = 0;
+
+    if (!digitalRead(Set_Button)) {//////////////////////////////
+      minute += 1;
+
+      if (minute >= 60) {
+        minute = 0;
+      }
+      delay(MinFast);
+      MinFast--;
+      if (MinFast <= 5) {
+        MinFast = 5;
+      }
+    } else {
+      MinFast = 150;
+    }
+  }
+
+  if (Min_Sec == 2) {
+    dot[6] = 1;
+    dot[5] = 1;
+    dot[4] = 0;
+    dot[3] = 0;
+    dot[2] = 0;
+    dot[1] = 0;
+    if (!digitalRead(Set_Button) && second <= 30) {
+      second = 0;
+    }
+    if (!digitalRead(Set_Button) && second > 30) {
+      second = 0;
+      minute++;
+    }
+  }
+
+  if (Min_Sec >= 3) {
+    if (!free_the_DOT) {
+      dot[6] = 0;
+      dot[5] = 0;
+      dot[4] = 0;
+      dot[3] = 0;
+      dot[2] = 0;
+      dot[1] = 0;
+      free_the_DOT = 1;
+    }
+
+    if (!digitalRead(Set_Button) && second < 30) {
+      second = 0;
+    }
+    if (!digitalRead(Set_Button) && second >= 30) {
+      second = 0;
+      minute++;
+    }
+  }
+}
