@@ -1,0 +1,210 @@
+//#define DEBUG 1
+#include <PID_v2.h> // uses my new version of PID_v1
+
+double Setpoint, Input, Output;
+//PID myPID(&Input, &Output, &Setpoint, 0.02, 0.1, 0.00, DIRECT);
+PID myPID(&Input, &Output, &Setpoint, 0.04, 0.1, 0.00, DIRECT);
+//PID myPID(&Input, &Output, &Setpoint, 0.006, 0.0035, 0.00, DIRECT);
+//PID myPID(&Input, &Output, &Setpoint, 0.821, 1.8, 0.00, DIRECT);
+//PID myPID(&Input, &Output, &Setpoint, 0.82, 1.00, 0.00, DIRECT);///////////Fast responds and reasonable accurate
+//PID myPID(&Input, &Output, &Setpoint, 6.1, 0.005, 0.00, DIRECT);// good at 2000RPM
+//PID myPID(&Input, &Output, &Setpoint, 8.538, 4.0, 0.00, DIRECT);
+
+#define PWMpin  9
+
+int SampleDuration = 30; // in Milliseconds
+volatile unsigned long timeX = 1;
+int PulsesPerRevolution = 2;
+volatile int Counts = 1;
+double PulsesPerMinute;
+volatile unsigned long LastTime;
+volatile int PulseCtrX;
+int PulseCtr;
+unsigned long Counter;
+unsigned long Time;
+/*
+  //Self Test
+  int RPM = 1;
+  double TextRPM = 1;
+*/
+void setup() {
+
+
+////////////////Set 25Khz on pin 9(the fan likes this acording the datasheet :-P)
+//  TCCR1A = (1 << COM1A1) | (1 << COM1B1) | (1 << WGM11);
+//  TCCR1B = (1 << CS10) | (1 << WGM13);
+//  ICR1 = 320;
+//  OCR1A = 0;
+//  OCR1B = 0;
+
+// note that 1666666.67 = (60 seonds * 1000000 microseconds)microseconds in a minute / (36 / 9) pulses in 1 revolution
+PulsesPerMinute = (60 * 1000000) / (PulsesPerRevolution / Counts);
+Setpoint = 2000;
+pinMode(2, INPUT_PULLUP);
+pinMode(3, OUTPUT);
+pinMode(4, OUTPUT);
+digitalWrite(4, HIGH);
+Serial.begin(115200);
+
+delay(1000);
+//Digital Pin 2 Set As An Interrupt for tacho.
+attachInterrupt(0, sensorInterrupt, FALLING);
+
+myPID.SetSampleTime(1);
+myPID.SetOutputLimits(15, 254);
+PulseCtr = 0;
+myPID.SetMode(AUTOMATIC);
+myPID.PrimeIntegral(150);
+myPID.Compute();
+analogWrite(PWMpin, Output);
+delay(100);
+myPID.Compute();
+
+
+}
+
+void loop() {
+
+  if (Serial.available() > 0) {
+    Setpoint = Serial.parseInt();
+    //Serial.println(Setpoint);
+  }
+
+
+  readRpm();
+  //  SelfTest();
+  static unsigned long SpamTimer;
+  if ((unsigned long)(millis() - SpamTimer) >= 15000) {
+    SpamTimer = millis();
+    //    Setpoint = (Setpoint == 4100) ? 7100 : 4100;
+  }
+  {
+
+    Serial.print(Input);
+    Serial.print(",");
+    Serial.println(Setpoint);
+    Serial.print(",");
+
+  }
+}
+/*
+  void SelfTest(){
+  static unsigned long TestTimer;
+  static bool done = false;
+  static unsigned long TestTime;
+  if(done)return;
+  if ((unsigned long)(micros() - TestTimer) >= TestTime) { // rpm test
+    TestTimer += TestTime;// we want an exact duration for our tests
+    TestTime = (60000000 / (PulsesPerRevolution * RPM));// we are one pulse behind so calculate next delay
+    sensorInterrupt();
+    if (RPM <= 850) {
+      TextRPM += .04;
+      RPM = (int) TextRPM;
+    }
+    else done = true;
+  }
+
+  }
+*/
+
+// New version of sensorInterrupt
+void sensorInterrupt()
+{
+  static int Ctr;
+  unsigned long Time;
+  Ctr++;
+  if (Ctr >= Counts) { // so we are taking an average of "Counts" readings to use in our calculations
+    Time = micros();
+    timeX += (Time - LastTime); // this time is accumulative ovrer those "Counts" readings
+    LastTime = Time;
+    PulseCtrX ++; // will usually be 1 unless something else delays the sample
+    Ctr = 0;
+  }
+}
+
+void sensorInterruptX()
+{
+  static int Ctr;
+  unsigned long Time;
+  Ctr++;
+  if (Ctr >= Counts) { // so we are taking an average of "Counts" readings to use in our calculations
+    Time = micros();
+    timeX += (Time - LastTime); // this time is accumulative ovrer those "Counts" readings
+    LastTime = Time;
+    PulseCtrX ++; // will usually be 1 unless something else delays the sample
+    Ctr = 0;
+  }
+}
+
+
+
+void readRpm()
+{
+  if (!PulseCtrX) return; // << Added lets not stop interrupts unless we know we are ready (keep other code happy).
+  cli ();         // clear interrupts flag
+  Time = timeX;   // Make a copy so if an interrupt occurs timeX can be altered and not affect the results.
+  timeX = 0;
+  PulseCtr = PulseCtrX;
+  PulseCtrX = 0;
+  sei ();         // set interrupts flag
+  if (PulseCtr > 0) {
+    Input =  (double) (PulsesPerMinute /  (double)(( (unsigned long)Time ) *  (unsigned long)PulseCtr)); // double has more percision
+    //   PulseCtr = 0; // set pulse Ctr to zero
+    AverageCapture(Input);
+    debug();
+    myPID.Compute();
+    analogWrite(PWMpin, Output);
+    //
+    if (Time > ((SampleDuration + 1) * 1000))Counts--;
+    if (Time < ((SampleDuration - 1) * 1000))Counts++;
+    Counts = constrain(Counts, PulsesPerRevolution * .1, PulsesPerRevolution * 100);
+    // Counts = constrain(Counts, 1,100);
+    Time = 0; // set time to zero to wait for the next rpm trigger.
+    Counter += PulseCtr;
+    PulseCtr = 0; // set pulse Ctr to zero
+    PulsesPerMinute = (60.0 * 1000000.0) / (double)((double)PulsesPerRevolution / (double)Counts);
+  }
+}
+float AvgArray[100];
+int Readings = 0;
+void AverageCapture(float in) {
+  static int Position = 0;
+  AvgArray[Position] = in;
+  Position++;
+  Readings++;
+  Readings = min (100, Readings); // 100 readings 0-99;
+  if (Position >= 100)Position = 0;//99 spots
+}
+float AverageValue() {
+  float Total = 0;
+  float Average;
+  if (!Readings)return (0.0);
+  for (int Position = 0; Position < Readings; Position++) {
+    Total += AvgArray[Position];
+  }
+  Average = Total / Readings;
+  return (Average);
+}
+void debug()
+{
+  return;
+  char S[20];
+  for (static long QTimer = millis(); (long)( millis() - QTimer ) >= 100; QTimer = millis() ) {  // one line Spam Delay at 100 miliseconds
+    /*Serial.print("Counts: ");*/ //Serial.print(Counts );
+    //        Serial.print(" Target RPM: ");Serial.print(RPM );
+    //    Serial.print(" Counter: "); Serial.print(Counter );
+    //    Serial.print(" time: "); Serial.print(Time );
+    //  Serial.print(" DeltaT: "); Serial.print(Time *  PulseCtr);
+    //  Serial.print(" PulseCtr: "); Serial.print(PulseCtr );
+    //    Serial.print(" PulsesPerMinute: "); Serial.print(dtostrf(PulsesPerMinute, 6, 1, S));
+    //  Serial.print(" Average: "); Serial.print(dtostrf(AverageValue(), 6, 1, S));
+
+    //   Serial.print(" Setpoint: "); Serial.print(dtostrf(Setpoint, 6, 1, S) );
+    //Serial.print(" Calculated RPM: "); Serial.print(dtostrf(Input, 6, 1, S));
+    //Serial.print(" Output: "); Serial.print(dtostrf(Output, 6, 2, S));
+    //Serial.println();
+
+
+  }
+
+}
